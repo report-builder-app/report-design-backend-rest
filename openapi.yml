@@ -1,0 +1,309 @@
+openapi: 3.0.3
+info:
+  title: Report Design Service API
+  description: REST API для генерации отчётов из JSON-описания в форматы PDF, XLSX, HTML и JSON.
+  version: 0.1.2
+
+servers:
+  - url: http://localhost:8080
+    description: Локальный сервер разработки
+
+tags:
+  - name: Reports
+    description: Генерация отчётов и информация о доступных форматах
+
+paths:
+  /api/v1/reports/render/{format}:
+    post:
+      tags:
+        - Reports
+      summary: Сгенерировать отчёт в указанном формате
+      description: |
+        Принимает JSON-описание отчёта и возвращает бинарный файл в выбранном формате.
+        Формат задаётся в пути (`pdf`, `xls`, `html`, `json`).
+      operationId: renderReport
+      parameters:
+        - name: format
+          in: path
+          required: true
+          description: Формат вывода (доступные значения см. `/formats`)
+          schema:
+            type: string
+            enum: [pdf, xls, html, json]
+            example: pdf
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenderRequest'
+      responses:
+        '200':
+          description: Успешный рендеринг отчёта
+          headers:
+            Content-Disposition:
+              description: Имя файла для скачивания
+              schema:
+                type: string
+                example: attachment; filename="CustomerReport.pdf"
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: string
+        '400':
+          description: Неверный формат или ошибка в описании отчёта
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '401':
+          description: Отсутствует или недействителен JWT-токен
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '500':
+          description: Внутренняя ошибка при рендеринге (например, недоступность источника данных)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /api/v1/reports/formats:
+    get:
+      tags:
+        - Reports
+      summary: Список доступных форматов
+      description: Возвращает список идентификаторов форматов, зарегистрированных в `RendererRegistry`.
+      operationId: listFormats
+      responses:
+        '200':
+          description: Успешный ответ
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                example: ["pdf", "xls", "html", "json"]
+        '401':
+          description: Отсутствует или недействителен JWT-токен
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT-токен, выпущенный настроенным OAuth2/OpenID провайдером
+
+  schemas:
+    RenderRequest:
+      type: object
+      required:
+        - report
+      properties:
+        report:
+          $ref: '#/components/schemas/ReportDefinitionDto'
+        parameters:
+          type: object
+          additionalProperties: true
+          description: Runtime-параметры отчёта (переопределяют значения по умолчанию)
+          example:
+            StartDate: "2024-01-01"
+            EndDate: "2024-12-31"
+
+    ReportDefinitionDto:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: CustomerReport
+        title:
+          type: string
+          example: Customer List
+        pageFormat:
+          type: string
+          enum: [A4, A5, LETTER]
+          example: A4
+        orientation:
+          type: string
+          enum: [PORTRAIT, LANDSCAPE]
+          example: PORTRAIT
+        parameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParameterDto'
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldDto'
+        queryString:
+          type: string
+          description: SQL-запрос для источника данных `sql`
+          example: "SELECT id, name FROM customers WHERE created_at >= $P{StartDate}"
+        bands:
+          type: array
+          items:
+            $ref: '#/components/schemas/BandDto'
+        dataSource:
+          $ref: '#/components/schemas/DataSourceDto'
+
+    ParameterDto:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+          example: StartDate
+        type:
+          type: string
+          enum: [String, Long, Integer, Date, BigDecimal]
+          example: Date
+        defaultValue:
+          description: Значение по умолчанию (произвольный JSON-тип)
+          nullable: true
+
+    FieldDto:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+          example: id
+        type:
+          type: string
+          enum: [String, Long, Integer, Date, BigDecimal]
+          example: Long
+
+    BandDto:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [TITLE, COLUMN_HEADER, DETAIL, SUMMARY]
+          example: DETAIL
+        elements:
+          type: array
+          items:
+            $ref: '#/components/schemas/ElementDto'
+
+    ElementDto:
+      type: object
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+          enum: [label, textField, line]
+          example: textField
+        text:
+          type: string
+          description: Текст для `label`
+          example: Hello
+        expression:
+          type: string
+          description: Выражение для `textField` (`$F{field}`, `$P{param}`)
+          example: "$F{name}"
+        style:
+          type: string
+          description: Имя стиля из `styles { ... }`
+          example: header
+        width:
+          type: number
+          format: float
+          example: 100.0
+        height:
+          type: number
+          format: float
+          example: 20.0
+        y:
+          type: number
+          format: float
+          description: Вертикальная позиция для `line`
+          example: 0.0
+
+    DataSourceDto:
+      type: object
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          enum: [sql, web, custom]
+          example: sql
+        jdbcUrl:
+          type: string
+          description: Только для `provider=sql`
+          example: "jdbc:postgresql://localhost:5432/mydb"
+        user:
+          type: string
+          description: Только для `provider=sql`
+        password:
+          type: string
+          description: Только для `provider=sql`
+        url:
+          type: string
+          description: Только для `provider=web`
+          example: "https://api.example.com/orders"
+        jsonPath:
+          type: string
+          description: Только для `provider=web`
+          example: "$.data[*]"
+        options:
+          type: object
+          additionalProperties: true
+          description: Только для `provider=custom` (например, MongoDB)
+          example:
+            providerName: mongodb
+            uri: "mongodb://localhost:27017"
+            database: shop
+            collection: orders
+
+    ProblemDetail:
+      type: object
+      description: RFC 9457 Problem Details
+      properties:
+        type:
+          type: string
+          format: uri
+          example: "about:blank"
+        title:
+          type: string
+          example: Bad Request
+        status:
+          type: integer
+          example: 400
+        detail:
+          type: string
+          example: "Unsupported format: unknown"
+        instance:
+          type: string
+          format: uri
+          example: "/api/v1/reports/render/unknown"
+
+security:
+  - bearerAuth: []
