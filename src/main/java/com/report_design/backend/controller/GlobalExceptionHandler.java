@@ -1,5 +1,6 @@
 package com.report_design.backend.controller;
 
+import com.report_design.backend.dto.exception.DataSourceNotFoundException;
 import com.report_design.backend.dto.exception.InvalidReportException;
 import com.report_design.backend.dto.exception.UnknownFormatException;
 import org.springframework.http.HttpStatus;
@@ -32,5 +33,10 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleGeneric(Exception ex) {
         return ProblemDetail.forStatusAndDetail(
                 HttpStatus.INTERNAL_SERVER_ERROR, "Internal error: " + ex.getMessage());
+    }
+
+    @ExceptionHandler(DataSourceNotFoundException.class)
+    public ProblemDetail handleDataSourceNotFound(DataSourceNotFoundException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 }
