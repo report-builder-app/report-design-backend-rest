@@ -1,36 +1,72 @@
 openapi: 3.0.3
 info:
   title: Report Design Service API
-  description: REST API для генерации отчётов из JSON-описания в форматы PDF, XLSX, HTML и JSON.
+  description: |
+    REST API для генерации отчётов из JSON-описания в форматы PDF, XLSX, HTML и JSON,
+    а также для управления шаблонами отчётов и проверки источников данных.
+    Все эндпоинты, кроме явно указанных как публичные, требуют JWT-токен в заголовке `Authorization: Bearer <token>`.
   version: 0.1.2
 
 servers:
   - url: http://localhost:8080
     description: Локальный сервер разработки
+  - url: http://192.168.0.155:8080
+    description: Сервер в локальной сети (для фронтенда)
 
 tags:
-  - name: Reports
-    description: Генерация отчётов и информация о доступных форматах
+  - name: Render
+    description: Генерация отчётов в выбранном формате
+  - name: Templates
+    description: Управление сохранёнными шаблонами отчётов
+  - name: Metadata
+    description: Справочники форматов и стилей
+  - name: Validation
+    description: Проверка описания отчёта без рендеринга
+  - name: DataSources
+    description: Проверка подключения к источникам данных
 
 paths:
+  # ------------------------------------------------------------------
+  # Render
+  # ------------------------------------------------------------------
   /api/v1/reports/render/{format}:
     post:
-      tags:
-        - Reports
+      tags: [Render]
       summary: Сгенерировать отчёт в указанном формате
       description: |
         Принимает JSON-описание отчёта и возвращает бинарный файл в выбранном формате.
-        Формат задаётся в пути (`pdf`, `xls`, `html`, `json`).
+        Поддерживаемые форматы: `pdf`, `xls`, `html`, `json` (см. `GET /api/v1/reports/formats`).
       operationId: renderReport
+      security:
+        - bearerAuth: []
       parameters:
         - name: format
           in: path
           required: true
-          description: Формат вывода (доступные значения см. `/formats`)
+          description: Формат вывода
           schema:
             type: string
             enum: [pdf, xls, html, json]
             example: pdf
+        - name: disposition
+          in: query
+          required: false
+          description: |
+            `attachment` (по умолчанию) — браузер скачивает файл.
+            `inline` — отображает содержимое в iframe (для preview).
+          schema:
+            type: string
+            enum: [attachment, inline]
+            default: attachment
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            UUID, позволяющий кэшировать результат рендеринга.
+            Повторный вызов с тем же ключом вернёт уже сгенерированный файл.
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -42,7 +78,7 @@ paths:
           description: Успешный рендеринг отчёта
           headers:
             Content-Disposition:
-              description: Имя файла для скачивания
+              description: Имя файла и режим отображения
               schema:
                 type: string
                 example: attachment; filename="CustomerReport.pdf"
@@ -62,31 +98,19 @@ paths:
               schema:
                 type: string
         '400':
-          description: Неверный формат или ошибка в описании отчёта
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetail'
+          $ref: '#/components/responses/BadRequest'
         '401':
-          description: Отсутствует или недействителен JWT-токен
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetail'
+          $ref: '#/components/responses/Unauthorized'
         '500':
-          description: Внутренняя ошибка при рендеринге (например, недоступность источника данных)
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetail'
+          $ref: '#/components/responses/InternalServerError'
 
   /api/v1/reports/formats:
     get:
-      tags:
-        - Reports
+      tags: [Metadata]
       summary: Список доступных форматов
       description: Возвращает список идентификаторов форматов, зарегистрированных в `RendererRegistry`.
       operationId: listFormats
+      security: []   # публичный эндпоинт
       responses:
         '200':
           description: Успешный ответ
@@ -97,12 +121,195 @@ paths:
                 items:
                   type: string
                 example: ["pdf", "xls", "html", "json"]
-        '401':
-          description: Отсутствует или недействителен JWT-токен
+
+  # ------------------------------------------------------------------
+  # Templates
+  # ------------------------------------------------------------------
+  /api/v1/reports:
+    get:
+      tags: [Templates]
+      summary: Список сохранённых шаблонов
+      operationId: listTemplates
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список шаблонов
           content:
-            application/problem+json:
+            application/json:
               schema:
-                $ref: '#/components/schemas/ProblemDetail'
+                type: array
+                items:
+                  $ref: '#/components/schemas/ReportListItemDto'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Templates]
+      summary: Сохранить новый шаблон
+      operationId: createTemplate
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveReportRequest'
+      responses:
+        '201':
+          description: Шаблон сохранён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedReportDto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/reports/{id}:
+    get:
+      tags: [Templates]
+      summary: Загрузить шаблон по id
+      operationId: getTemplate
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '200':
+          description: Шаблон найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedReportDto'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Templates]
+      summary: Обновить существующий шаблон
+      operationId: updateTemplate
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveReportRequest'
+      responses:
+        '200':
+          description: Шаблон обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedReportDto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Templates]
+      summary: Удалить шаблон
+      operationId: deleteTemplate
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '204':
+          description: Шаблон удалён
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ------------------------------------------------------------------
+  # Styles
+  # ------------------------------------------------------------------
+  /api/v1/reports/styles:
+    get:
+      tags: [Metadata]
+      summary: Справочник стилей
+      description: Возвращает список преднастроенных стилей, на которые можно ссылаться через `element.style`.
+      operationId: listStyles
+      security: []   # публичный эндпоинт
+      responses:
+        '200':
+          description: Список стилей
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StyleDto'
+
+  # ------------------------------------------------------------------
+  # Validation
+  # ------------------------------------------------------------------
+  /api/v1/reports/validate:
+    post:
+      tags: [Validation]
+      summary: Проверить описание отчёта без рендеринга
+      operationId: validateReport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenderRequest'
+      responses:
+        '200':
+          description: Результат валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ------------------------------------------------------------------
+  # DataSources
+  # ------------------------------------------------------------------
+  /api/v1/datasources/test:
+    post:
+      tags: [DataSources]
+      summary: Проверить подключение к источнику данных
+      description: |
+        Выполняет пробное подключение и (для `custom`-провайдеров) читает первые строки.
+        **Требует роль `ADMIN`.** В production должен быть ограничен whitelist'ом хостов.
+      operationId: testDataSource
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DataSourceTestRequest'
+      responses:
+        '200':
+          description: Результат проверки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataSourceTestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
 components:
   securitySchemes:
@@ -112,11 +319,53 @@ components:
       bearerFormat: JWT
       description: JWT-токен, выпущенный настроенным OAuth2/OpenID провайдером
 
+  parameters:
+    ReportId:
+      name: id
+      in: path
+      required: true
+      description: Идентификатор сохранённого шаблона
+      schema:
+        type: string
+        example: "8b1c9f2e-4c5d-4a7b-9e0f-1234567890ab"
+
+  responses:
+    BadRequest:
+      description: Ошибка валидации или некорректный запрос
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Unauthorized:
+      description: Отсутствует или недействителен JWT-токен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    InternalServerError:
+      description: Внутренняя ошибка (например, недоступность источника данных)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+
   schemas:
+    # ---------------- Render ----------------
     RenderRequest:
       type: object
-      required:
-        - report
+      required: [report]
       properties:
         report:
           $ref: '#/components/schemas/ReportDefinitionDto'
@@ -130,8 +379,7 @@ components:
 
     ReportDefinitionDto:
       type: object
-      required:
-        - name
+      required: [name]
       properties:
         name:
           type: string
@@ -168,9 +416,7 @@ components:
 
     ParameterDto:
       type: object
-      required:
-        - name
-        - type
+      required: [name, type]
       properties:
         name:
           type: string
@@ -180,14 +426,11 @@ components:
           enum: [String, Long, Integer, Date, BigDecimal]
           example: Date
         defaultValue:
-          description: Значение по умолчанию (произвольный JSON-тип)
           nullable: true
 
     FieldDto:
       type: object
-      required:
-        - name
-        - type
+      required: [name, type]
       properties:
         name:
           type: string
@@ -199,8 +442,7 @@ components:
 
     BandDto:
       type: object
-      required:
-        - type
+      required: [type]
       properties:
         type:
           type: string
@@ -213,8 +455,7 @@ components:
 
     ElementDto:
       type: object
-      required:
-        - kind
+      required: [kind]
       properties:
         kind:
           type: string
@@ -230,7 +471,7 @@ components:
           example: "$F{name}"
         style:
           type: string
-          description: Имя стиля из `styles { ... }`
+          description: Имя стиля из `GET /api/v1/reports/styles`
           example: header
         width:
           type: number
@@ -248,8 +489,7 @@ components:
 
     DataSourceDto:
       type: object
-      required:
-        - provider
+      required: [provider]
       properties:
         provider:
           type: string
@@ -283,6 +523,107 @@ components:
             database: shop
             collection: orders
 
+    # ---------------- Templates ----------------
+    SaveReportRequest:
+      type: object
+      required: [definition]
+      properties:
+        definition:
+          $ref: '#/components/schemas/ReportDefinitionDto'
+
+    SavedReportDto:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "8b1c9f2e-4c5d-4a7b-9e0f-1234567890ab"
+        definition:
+          $ref: '#/components/schemas/ReportDefinitionDto'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ReportListItemDto:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        title:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+
+    # ---------------- Styles ----------------
+    StyleDto:
+      type: object
+      properties:
+        name:
+          type: string
+          example: header
+        fontName:
+          type: string
+          example: Helvetica
+        fontSize:
+          type: integer
+          example: 12
+        bold:
+          type: boolean
+          example: true
+        italic:
+          type: boolean
+          example: false
+        foreground:
+          type: string
+          example: "#000000"
+        background:
+          type: string
+          nullable: true
+          example: "#EEEEEE"
+
+    # ---------------- Validation ----------------
+    ValidationResult:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    # ---------------- DataSources ----------------
+    DataSourceTestRequest:
+      type: object
+      required: [dataSource]
+      properties:
+        dataSource:
+          $ref: '#/components/schemas/DataSourceDto'
+
+    DataSourceTestResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        elapsedMs:
+          type: integer
+          format: int64
+        sampleRows:
+          type: integer
+          nullable: true
+
+    # ---------------- Errors ----------------
     ProblemDetail:
       type: object
       description: RFC 9457 Problem Details

@@ -2,8 +2,10 @@ package com.report_design.backend.configuration;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -41,14 +43,15 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/v1/reports/formats").permitAll() // Публичный эндпоинт (если нужен)
-                        .anyRequest().authenticated() // Все остальные запросы требуют токен
+                        .requestMatchers(HttpMethod.GET, "/api/v1/reports/formats").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/datasources/test").hasRole("ADMIN")
+                        .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())))
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS) // Отключаем сессии
                 )
-                .csrf(csrf -> csrf.disable()); // CSRF не нужен для stateless API
+                .csrf(AbstractHttpConfigurer::disable); // CSRF не нужен для stateless API
 
         return http.build();
     }
